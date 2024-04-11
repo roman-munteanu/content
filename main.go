@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -12,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+
+	"roman-munteanu/content/service"
 )
 
 const (
@@ -23,28 +24,51 @@ type ContentApp struct {
 	DDBClient *dynamodb.Client
 	SQSClient *sqs.Client
 	cancel    func()
-	tableName string
 	queueName string
+	tableName string
 }
 
 func main() {
 	a := ContentApp{
-		tableName: "items",
 		queueName: "delete-items",
+		tableName: "content-table",
 	}
 
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	defer a.cancel()
 
-	a.newDynamoDbClient()
+	ddbClient, err := newDynamoDbClient()
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
+	a.DDBClient = ddbClient
 
-	a.newSQSClient()
+	sqsClient, err := newSQSClient()
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
+	a.SQSClient = sqsClient
 
-	fmt.Println("Content")
+	queueService, err := service.NewQueueService(a.SQSClient, a.queueName)
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
 
+	dbService := service.NewDDBService(a.DDBClient, a.tableName)
+
+	worker := service.NewWorker(queueService, dbService)
+
+	err = worker.Process(a.ctx)
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
 }
 
-func (a *ContentApp) newDynamoDbClient() {
+func newDynamoDbClient() (*dynamodb.Client, error) {
 	httpClient := awsHTTP.
 		NewBuildableClient().
 		WithTimeout(3 * time.Second)
@@ -61,7 +85,7 @@ func (a *ContentApp) newDynamoDbClient() {
 		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
 	})
 
-	cfg, err := awsConfig.LoadDefaultConfig(a.ctx,
+	cfg, err := awsConfig.LoadDefaultConfig(context.Background(),
 		awsConfig.WithRegion(theRegion),
 		awsConfig.WithEndpointResolverWithOptions(customResolver),
 		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("localstack", "localstack", "session")),
@@ -69,12 +93,13 @@ func (a *ContentApp) newDynamoDbClient() {
 	)
 	if err != nil {
 		log.Fatalf("unable to load SDK config, %v", err)
+		return nil, err
 	}
 
-	a.DDBClient = dynamodb.NewFromConfig(cfg)
+	return dynamodb.NewFromConfig(cfg), nil
 }
 
-func (a *ContentApp) newSQSClient() {
+func newSQSClient() (*sqs.Client, error) {
 	httpClient := awsHTTP.
 		NewBuildableClient().
 		WithTimeout(3 * time.Second)
@@ -97,7 +122,8 @@ func (a *ContentApp) newSQSClient() {
 	)
 	if err != nil {
 		log.Fatalf("unable to load SDK config, %v", err)
+		return nil, err
 	}
 
-	a.SQSClient = sqs.NewFromConfig(cfg)
+	return sqs.NewFromConfig(cfg), nil
 }
