@@ -59,7 +59,17 @@ func main() {
 
 	dbService := service.NewDDBService(a.DDBClient, a.tableName)
 
+	// accountID := "39b51f69-c619-46cb-a0b2-4fc5b1a76001"
+	// err = dbService.Populate(a.ctx, accountID, 3000)
+	// if err != nil {
+	// 	fmt.Println("could not populate DDB", err)
+	// 	return
+	// }
+	// fmt.Println("DDB has been populated for accountID:", accountID)
+	// return
+
 	worker := service.NewWorker(queueService, dbService)
+	defer worker.Close()
 
 	err = worker.Process(a.ctx)
 	if err != nil {

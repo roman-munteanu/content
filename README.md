@@ -28,6 +28,12 @@ aws sqs receive-message \
     --endpoint-url=http://localhost:4566
 ```
 
+delete queue:
+```
+aws sqs delete-queue \
+    --queue-url http://localhost:4566/000000000000/delete-items \
+    --endpoint-url=http://localhost:4566
+```
 
 ## DDB
 
@@ -90,3 +96,15 @@ aws dynamodb put-item \
 	--condition-expression "attribute_not_exists(PK) AND attribute_not_exists(SK)" \
     --endpoint-url=http://localhost:4566
 ```
+
+count:
+```
+aws dynamodb query \
+    --table-name content-table \
+    --key-condition-expression "PK = :pkVal AND begins_with(SK, :skPrefix)" \
+    --expression-attribute-values  '{":pkVal":{"S":"ACCT#39b51f69-c619-46cb-a0b2-4fc5b1a76001"}, ":skPrefix":{"S":"CTNT#"}}' \
+    --select COUNT \
+    --endpoint-url=http://localhost:4566
+```
+
+
