@@ -59,8 +59,9 @@ func main() {
 
 	dbService := service.NewDDBService(a.DDBClient, a.tableName)
 
+	// numberOfItems := 3000
 	// accountID := "39b51f69-c619-46cb-a0b2-4fc5b1a76001"
-	// err = dbService.Populate(a.ctx, accountID, 3000)
+	// err = dbService.Populate(a.ctx, accountID, numberOfItems)
 	// if err != nil {
 	// 	fmt.Println("could not populate DDB", err)
 	// 	return
@@ -69,13 +70,18 @@ func main() {
 	// return
 
 	worker := service.NewWorker(queueService, dbService)
-	defer worker.Close()
 
 	err = worker.Process(a.ctx)
 	if err != nil {
 		log.Fatalln(err)
 		return
 	}
+
+	// err = worker.ProcessSingleThread(a.ctx)
+	// if err != nil {
+	// 	log.Fatalln(err)
+	// 	return
+	// }
 }
 
 func newDynamoDbClient() (*dynamodb.Client, error) {

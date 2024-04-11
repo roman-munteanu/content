@@ -35,18 +35,10 @@ func NewDDBService(client *dynamodb.Client, tableName string) *DDBService {
 	}
 }
 
-func (s *DDBService) FetchItems(ctx context.Context, accountID string) ([]model.ContentItem, error) {
-	queryInput := &dynamodb.QueryInput{
-		TableName:              aws.String(s.tableName),
-		KeyConditionExpression: aws.String("PK = :pkVal AND begins_with(SK, :skPrefix)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pkVal":    &types.AttributeValueMemberS{Value: s.accountPrefix + accountID},
-			":skPrefix": &types.AttributeValueMemberS{Value: s.contentPrefix},
-		},
-		ProjectionExpression: aws.String("account_id, content_id"),
-	}
-
+// FetchItemsSeq ...
+func (s *DDBService) FetchItemsSeq(ctx context.Context, accountID string) ([]model.ContentItem, error) {
 	var contentItems []model.ContentItem
+	queryInput := s.queryInput(accountID)
 
 	var items []map[string]types.AttributeValue
 	for {
@@ -72,6 +64,63 @@ func (s *DDBService) FetchItems(ctx context.Context, accountID string) ([]model.
 	return contentItems, nil
 }
 
+// FetchItems ...
+func (s *DDBService) FetchItems(ctx context.Context, accountID string, ch chan model.DeleteItemRequest) ([]model.ContentItem, error) {
+	queryInput := s.queryInput(accountID)
+
+	for {
+		var contentItems []model.ContentItem
+
+		output, qErr := s.DDBClient.Query(ctx, queryInput)
+		if qErr != nil {
+			fmt.Println("could not call query", qErr)
+			return []model.ContentItem{}, qErr
+		}
+
+		err := attributevalue.UnmarshalListOfMaps(output.Items, &contentItems)
+		if err != nil {
+			fmt.Println("could not unmarshal items: ", err)
+			return []model.ContentItem{}, err
+		}
+		fmt.Println("contentItems length:", len(contentItems))
+
+		chunks := SplitSlice(contentItems, maxBatchWriteItem)
+		for _, chunk := range chunks {
+
+			var contentIDs []string
+			for _, contentItem := range chunk {
+				contentIDs = append(contentIDs, contentItem.ContentID)
+			}
+
+			ch <- model.DeleteItemRequest{
+				AccountID:  accountID,
+				ContentIDs: contentIDs,
+			}
+		}
+
+		if output.LastEvaluatedKey == nil {
+			break
+		}
+		queryInput.ExclusiveStartKey = output.LastEvaluatedKey
+	}
+
+	return nil, nil
+}
+
+func (s *DDBService) queryInput(accountID string) *dynamodb.QueryInput {
+	return &dynamodb.QueryInput{
+		TableName:              aws.String(s.tableName),
+		KeyConditionExpression: aws.String("PK = :pkVal AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pkVal":    &types.AttributeValueMemberS{Value: s.accountPrefix + accountID},
+			":skPrefix": &types.AttributeValueMemberS{Value: s.contentPrefix},
+		},
+		ProjectionExpression: aws.String("account_id, content_id"),
+		Limit:                aws.Int32(500),
+	}
+}
+
+// DeleteAll ...
 func (s *DDBService) DeleteAll(ctx context.Context, req model.DeleteItemRequest) error {
 	if len(req.ContentIDs) > maxBatchWriteItem {
 		return fmt.Errorf("number of delete requests cannot exceed 25 items, got %d", len(req.ContentIDs))
@@ -102,6 +151,7 @@ func (s *DDBService) DeleteAll(ctx context.Context, req model.DeleteItemRequest)
 	return nil
 }
 
+// WriteItems ...
 func (s *DDBService) WriteItems(ctx context.Context, items []model.ContentItem) error {
 	now := time.Now().UTC()
 
@@ -139,6 +189,7 @@ func (s *DDBService) WriteItems(ctx context.Context, items []model.ContentItem) 
 	return nil
 }
 
+// Populate ...
 func (s *DDBService) Populate(ctx context.Context, accountID string, numberOfItems int) error {
 	var items []model.ContentItem
 	for i := 0; i < numberOfItems; i++ {
