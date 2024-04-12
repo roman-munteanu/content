@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -35,37 +36,106 @@ func NewDDBService(client *dynamodb.Client, tableName string) *DDBService {
 	}
 }
 
-// FetchItemsSeq ...
-func (s *DDBService) FetchItemsSeq(ctx context.Context, accountID string) ([]model.ContentItem, error) {
-	var contentItems []model.ContentItem
-	queryInput := s.queryInput(accountID)
-
-	var items []map[string]types.AttributeValue
-	for {
-		output, qErr := s.DDBClient.Query(ctx, queryInput)
-		if qErr != nil {
-			fmt.Println("could not call query", qErr)
-			return []model.ContentItem{}, qErr
-		}
-		items = append(items, output.Items...)
-
-		if output.LastEvaluatedKey == nil {
-			break
-		}
-		queryInput.ExclusiveStartKey = output.LastEvaluatedKey
-	}
-
-	err := attributevalue.UnmarshalListOfMaps(items, &contentItems)
-	if err != nil {
-		fmt.Println("could not unmarshal items: ", err)
-		return []model.ContentItem{}, err
-	}
-
-	return contentItems, nil
-}
-
 // FetchItems ...
 func (s *DDBService) FetchItems(ctx context.Context, accountID string, ch chan model.DeleteItemRequest) ([]model.ContentItem, error) {
+	wg := &sync.WaitGroup{}
+	queryInput := s.queryInput(accountID)
+
+	paginator := dynamodb.NewQueryPaginator(s.DDBClient, queryInput)
+fetchLoop:
+	for {
+		if !paginator.HasMorePages() {
+			break fetchLoop
+		}
+
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			fmt.Println("could not call query", err)
+			return nil, nil
+		}
+
+		wg.Add(1)
+		go func(output *dynamodb.QueryOutput) {
+			defer wg.Done()
+
+			if len(output.Items) == 0 {
+				return
+			}
+
+			var contentItems []model.ContentItem
+			err = attributevalue.UnmarshalListOfMaps(output.Items, &contentItems)
+			if err != nil {
+				fmt.Println("could not unmarshal items: ", err)
+				return
+			}
+			fmt.Println("contentItems length:", len(contentItems))
+
+			chunks := SplitSlice(contentItems, maxBatchWriteItem)
+			for _, chunk := range chunks {
+
+				var contentIDs []string
+				for _, contentItem := range chunk {
+					contentIDs = append(contentIDs, contentItem.ContentID)
+				}
+
+				ch <- model.DeleteItemRequest{
+					AccountID:  accountID,
+					ContentIDs: contentIDs,
+				}
+			}
+		}(page)
+	}
+
+	wg.Wait()
+
+	return nil, nil
+}
+
+// FetchItemsSeqPaginator ...
+func (s *DDBService) FetchItemsSeqPaginator(ctx context.Context, accountID string, ch chan model.DeleteItemRequest) ([]model.ContentItem, error) {
+	queryInput := s.queryInput(accountID)
+
+	paginator := dynamodb.NewQueryPaginator(s.DDBClient, queryInput)
+	for {
+		if !paginator.HasMorePages() {
+			break
+		}
+
+		var contentItems []model.ContentItem
+
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			fmt.Println("could not call query", err)
+			return []model.ContentItem{}, err
+		}
+
+		err = attributevalue.UnmarshalListOfMaps(page.Items, &contentItems)
+		if err != nil {
+			fmt.Println("could not unmarshal items: ", err)
+			return []model.ContentItem{}, err
+		}
+		fmt.Println("contentItems length:", len(contentItems))
+
+		chunks := SplitSlice(contentItems, maxBatchWriteItem)
+		for _, chunk := range chunks {
+
+			var contentIDs []string
+			for _, contentItem := range chunk {
+				contentIDs = append(contentIDs, contentItem.ContentID)
+			}
+
+			ch <- model.DeleteItemRequest{
+				AccountID:  accountID,
+				ContentIDs: contentIDs,
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+// FetchItemsSeqChannel ...
+func (s *DDBService) FetchItemsSeqChannel(ctx context.Context, accountID string, ch chan model.DeleteItemRequest) ([]model.ContentItem, error) {
 	queryInput := s.queryInput(accountID)
 
 	for {
@@ -105,6 +175,35 @@ func (s *DDBService) FetchItems(ctx context.Context, accountID string, ch chan m
 	}
 
 	return nil, nil
+}
+
+// FetchItemsSeqNoSplit ...
+func (s *DDBService) FetchItemsSeqNoSplit(ctx context.Context, accountID string) ([]model.ContentItem, error) {
+	var contentItems []model.ContentItem
+	queryInput := s.queryInput(accountID)
+
+	var items []map[string]types.AttributeValue
+	for {
+		output, qErr := s.DDBClient.Query(ctx, queryInput)
+		if qErr != nil {
+			fmt.Println("could not call query", qErr)
+			return []model.ContentItem{}, qErr
+		}
+		items = append(items, output.Items...)
+
+		if output.LastEvaluatedKey == nil {
+			break
+		}
+		queryInput.ExclusiveStartKey = output.LastEvaluatedKey
+	}
+
+	err := attributevalue.UnmarshalListOfMaps(items, &contentItems)
+	if err != nil {
+		fmt.Println("could not unmarshal items: ", err)
+		return []model.ContentItem{}, err
+	}
+
+	return contentItems, nil
 }
 
 func (s *DDBService) queryInput(accountID string) *dynamodb.QueryInput {

@@ -41,13 +41,18 @@ func (w *Worker) Process(ctx context.Context) error {
 	ch := make(chan model.DeleteItemRequest)
 	defer close(ch)
 
-	numberOfDelCosumers := 2
+	numberOfDelCosumers := 6
 	fmt.Println("numberOfDelCosumers:", numberOfDelCosumers)
 
 	var quitChannels []chan bool
 	for i := 0; i < numberOfDelCosumers; i++ {
 		quitChannels = append(quitChannels, make(chan bool))
 	}
+	defer func() {
+		for _, quitCh := range quitChannels {
+			close(quitCh)
+		}
+	}()
 
 	wg.Add(1)
 	go func() {
@@ -107,7 +112,7 @@ func (w *Worker) ProcessSingleThread(ctx context.Context) error {
 	fmt.Println("SQS message:", msg)
 	accountID := msg.AccountID
 
-	items, err := w.dbService.FetchItemsSeq(ctx, accountID)
+	items, err := w.dbService.FetchItemsSeqNoSplit(ctx, accountID)
 	if err != nil {
 		return err
 	}
